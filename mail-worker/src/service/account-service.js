@@ -5,7 +5,7 @@ import userService from './user-service';
 import emailService from './email-service';
 import orm from '../entity/orm';
 import account from '../entity/account';
-import { and, asc, eq, gt, inArray, count, sql, ne } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, count, sql, ne, or, lt, desc } from 'drizzle-orm';
 import {accountConst, isDel, settingConst} from '../const/entity-const';
 import settingService from './setting-service';
 import turnstileService from './turnstile-service';
@@ -57,6 +57,14 @@ const accountService = {
 			throw new BizError(t('isRegAccount'));
 		}
 
+		if (email.includes('+')) {
+			const baseEmail = emailUtils.getBaseEmail(email);
+			const baseAccount = await this.selectByEmailIncludeDel(c, baseEmail);
+			if (!baseAccount || baseAccount.userId !== userId) {
+				throw new BizError(t('notOwner'));
+			}
+		}
+
 		const userRow = await userService.selectById(c, userId);
 		const roleRow = await roleService.selectById(c, userRow.type);
 
@@ -105,10 +113,11 @@ const accountService = {
 
 	list(c, params, userId) {
 
-		let { accountId, size } = params;
+		let { accountId, size, lastSort } = params;
 
 		accountId = Number(accountId);
 		size = Number(size);
+		lastSort = Number(lastSort);
 
 		if (size > 30) {
 			size = 30;
@@ -117,12 +126,24 @@ const accountService = {
 		if (!accountId) {
 			accountId = 0;
 		}
+
+		if(Number.isNaN(lastSort)) {
+			lastSort = 9999999999;
+		}
+
 		return orm(c).select().from(account).where(
 			and(
 				eq(account.userId, userId),
 				eq(account.isDel, isDel.NORMAL),
-				gt(account.accountId, accountId)))
-			.orderBy(asc(account.accountId))
+					or(
+						lt(account.sort, lastSort),
+						and(
+							eq(account.sort, lastSort),
+							gt(account.accountId, accountId)
+						)
+					))
+				)
+			.orderBy(desc(account.sort), asc(account.accountId))
 			.limit(size)
 			.all();
 	},
@@ -140,6 +161,12 @@ const accountService = {
 
 		if (accountRow.userId !== user.userId) {
 			throw new BizError(t('noUserAccount'));
+		}
+
+		const { syncDelete } = await settingService.query(c);
+		if (syncDelete === settingConst.syncDelete.OPEN) {
+			await this.physicsDelete(c, { accountId });
+			return;
 		}
 
 		await orm(c).update(account).set({ isDel: isDel.DELETE }).where(
@@ -242,6 +269,15 @@ const accountService = {
 		}
 		await orm(c).update(account).set({ allReceive: accountConst.allReceive.CLOSE }).where(eq(account.userId, userId)).run();
 		await orm(c).update(account).set({ allReceive: accountRow.allReceive ? 0 : 1 }).where(eq(account.accountId, accountId)).run();
+	},
+
+	async setAsTop(c, params, userId) {
+		const { accountId } = params;
+		const userRow = await userService.selectById(c, userId);
+		const mainAccountRow = await accountService.selectByEmailIncludeDel(c, userRow.email);
+		let mainSort = mainAccountRow.sort === 0 ? 2 : mainAccountRow.sort + 1;
+		await orm(c).update(account).set({ sort: mainSort }).where(eq(account.email, userRow.email )).run();
+		await orm(c).update(account).set({ sort: mainSort - 1 }).where(and(eq(account.accountId, accountId),eq(account.userId,userId))).run();
 	}
 };
 

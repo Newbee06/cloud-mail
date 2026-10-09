@@ -6,7 +6,7 @@
     </div>
     <el-scrollbar class="scrollbar" ref="scrollbarRef">
       <div v-infinite-scroll="getAccountList" :infinite-scroll-distance="600" :infinite-scroll-immediate="false">
-        <el-card class="item" :class="itemBg(item.accountId)" v-for="item in accounts" :key="item.accountId"
+        <el-card class="item" :class="itemBg(item.accountId)" v-for="(item, index) in accounts" :key="item.accountId"
                  @click="changeAccount(item)">
           <div class="account">
             {{ item.email }}
@@ -24,8 +24,8 @@
                 <Icon icon="fluent:settings-24-filled" width="21" height="21" color="#909399"/>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item v-if="hasPerm('email:send')" @click="openSetName(item)">{{ $t('rename') }}
-                    </el-dropdown-item>
+                    <el-dropdown-item v-if="hasPerm('email:send')" @click="openSetName(item)">{{ $t('rename') }}</el-dropdown-item>
+                    <el-dropdown-item v-if="item.accountId !== userStore.user.account.accountId" @click="setAsTop(item, index)">{{ $t('pin') }}</el-dropdown-item>
                     <el-dropdown-item v-if="item.accountId !== userStore.user.account.accountId && hasPerm('account:delete')"
                                       @click="remove(item)">{{ $t('delete') }}
                     </el-dropdown-item>
@@ -77,7 +77,7 @@
     </el-scrollbar>
     <el-dialog v-model="showAdd" :title="$t('addAccount')">
       <div class="container">
-        <el-input v-model="addForm.email" ref="addRef" type="text" :placeholder="$t('emailAccount')" autocomplete="off">
+        <el-input v-model="addForm.email" ref="addRef" type="text" :placeholder="$t('emailAccount')" autocomplete="off" @keyup.enter="submit">
           <template #append>
             <div @click.stop="openSelect">
               <el-select
@@ -116,7 +116,7 @@
     </el-dialog>
     <el-dialog v-model="setNameShow" :title="$t('changeUserName')">
       <div class="container">
-        <el-input v-model="accountName" type="text" :placeholder="$t('username')" autocomplete="off">
+        <el-input v-model="accountName" type="text" :placeholder="$t('username')" autocomplete="off" @keyup.enter="setName">
         </el-input>
         <el-button class="btn" type="primary" @click="setName" :loading="setNameLoading"
         >{{ $t('save') }}
@@ -127,8 +127,15 @@
 </template>
 <script setup>
 import {Icon} from "@iconify/vue";
-import {nextTick, reactive, ref, watch} from "vue";
-import {accountList, accountAdd, accountDelete, accountSetName, accountSetAllReceive} from "@/request/account.js";
+import {computed, nextTick, reactive, ref, watch} from "vue";
+import {
+  accountList,
+  accountAdd,
+  accountDelete,
+  accountSetName,
+  accountSetAllReceive,
+  accountSetAsTop
+} from "@/request/account.js";
 import {sleep} from "@/utils/time-utils.js"
 import {isEmail} from "@/utils/verify-utils.js";
 import {useSettingStore} from "@/store/setting.js";
@@ -146,7 +153,7 @@ const settingStore = useSettingStore();
 const emailStore = useEmailStore();
 const showAdd = ref(false)
 const addLoading = ref(false);
-const domainList = settingStore.domainList
+const domainList = computed(() => settingStore.domainList)
 const accounts = reactive([])
 const noLoading = ref(false)
 const loading = ref(false)
@@ -169,8 +176,7 @@ const addForm = reactive({
 })
 let skeletonRows = 10
 const queryParams = {
-  accountId: 0,
-  size: 20
+  size: 30
 }
 
 const mySelect = ref()
@@ -182,6 +188,12 @@ if (hasPerm('account:query')) {
 watch(() => accountStore.changeUserAccountName, () => {
   accounts[0].name = accountStore.changeUserAccountName
 })
+
+watch(() => settingStore.domainList, (list) => {
+  if (!addForm.suffix && list.length > 0) {
+    addForm.suffix = list[0]
+  }
+}, {immediate: true})
 
 
 const openSelect = () => {
@@ -216,6 +228,8 @@ function getSkeletonRows() {
 }
 
 function setName() {
+
+  if (setNameLoading.value) return
 
   let name = accountName.value
 
@@ -288,6 +302,8 @@ function itemBg(accountId) {
   return accountStore.currentAccountId === accountId ? 'item-choose' : ''
 }
 
+
+
 function remove(account) {
   ElMessageBox.confirm(t('delConfirm', {msg: account.email}), {
     confirmButtonText: t('confirm'),
@@ -317,6 +333,7 @@ function refresh() {
   followLoading.value = false
   noLoading.value = false
   queryParams.accountId = 0
+  queryParams.lastSort = null
   getSkeletonRows();
   scrollbarRef.value.setScrollTop(0)
   accounts.splice(0, accounts.length)
@@ -329,10 +346,25 @@ function changeAccount(account) {
 }
 
 function add() {
+  addForm.suffix = addForm.suffix || settingStore.domainList[0]
   showAdd.value = true
   setTimeout(() => {
     addRef.value.focus()
   }, 100)
+}
+
+function setAsTop(account, index) {
+  accountSetAsTop(account.accountId).then(() => {
+    ElMessage({
+      message: t('setSuccess'),
+      type: 'success',
+      plain: true,
+    })
+
+    const [item] = accounts.splice(index, 1);
+    accounts.splice(1, 0, item);
+
+  });
 }
 
 async function copyAccount(account) {
@@ -365,7 +397,10 @@ function getAccountList() {
 
   let start = Date.now();
 
-  accountList(queryParams.accountId, queryParams.size).then(async list => {
+  const accountId = accounts.length > 0 ? accounts.at(-1).accountId : 0;
+  const lastSort = accounts.length > 0 ? accounts.at(-1).sort : null;
+
+  accountList(accountId, queryParams.size, lastSort).then(async list => {
 
     let end = Date.now();
     let duration = end - start;
@@ -379,7 +414,7 @@ function getAccountList() {
     if (accounts.length === 0) {
       accountStore.currentAccount = list[0]
     }
-    queryParams.accountId = list.at(-1).accountId
+
     accounts.push(...list)
 
     loading.value = false
@@ -393,6 +428,8 @@ function getAccountList() {
 
 
 function submit() {
+
+  if (addLoading.value) return
 
   if (!addForm.email) {
     ElMessage({
@@ -449,7 +486,6 @@ function submit() {
   addLoading.value = true
   accountAdd(addForm.email + addForm.suffix, verifyToken).then(account => {
     addLoading.value = false
-    showAdd.value = false
     addForm.email = ''
     accounts.push(account)
     verifyToken = ''
@@ -460,6 +496,7 @@ function submit() {
       plain: true
     })
     verifyShow.value = false
+    showAdd.value = false
     userStore.refreshUserInfo()
   }).catch(res => {
     if (res.code === 400) {
@@ -547,14 +584,15 @@ path[fill="#ffdda1"] {
   .item {
     background-color: var(--el-bg-color);
     border-radius: 8px;
-    padding: 12px 10px;
-    margin-bottom: 10px;
+    padding: 10px;
+    margin-bottom: 11px;
     margin-left: 10px;
     margin-right: 10px;
     cursor: pointer;
 
     .account {
-      font-weight: 600;
+      font-weight: 400;
+      font-size: 15px;
       margin-bottom: 20px;
       overflow: hidden;
       white-space: nowrap;

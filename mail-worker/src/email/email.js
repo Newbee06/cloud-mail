@@ -5,13 +5,13 @@ import settingService from '../service/setting-service';
 import attService from '../service/att-service';
 import constant from '../const/constant';
 import fileUtils from '../utils/file-utils';
-import { emailConst, isDel, roleConst, settingConst } from '../const/entity-const';
+import { emailConst, isDel, settingConst } from '../const/entity-const';
 import emailUtils from '../utils/email-utils';
 import roleService from '../service/role-service';
-import verifyUtils from '../utils/verify-utils';
-import r2Service from '../service/r2-service';
 import userService from '../service/user-service';
 import telegramService from '../service/telegram-service';
+import aiService from '../service/ai-service';
+import webhookService from '../service/webhook-service';
 
 export async function email(message, env, ctx) {
 
@@ -23,17 +23,25 @@ export async function email(message, env, ctx) {
 			tgBotStatus,
 			forwardStatus,
 			forwardEmail,
+			webhookStatus,
+			webhookUrl,
+			webhookRetry,
+			webhookSecret,
 			ruleEmail,
 			ruleType,
 			r2Domain,
-			noRecipient
+			noRecipient,
+			blackSubject,
+			blackContent,
+			blackFrom,
+			aiCode,
+			aiCodeFilter
 		} = await settingService.query({ env });
 
 		if (receive === settingConst.receive.CLOSE) {
 			message.setReject('Service suspended');
 			return;
 		}
-
 
 		const reader = message.raw.getReader();
 		let content = '';
@@ -46,7 +54,22 @@ export async function email(message, env, ctx) {
 
 		const email = await PostalMime.parse(content);
 
-		const account = await accountService.selectByEmailIncludeDel({ env: env }, message.to);
+
+		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
+
+		if (blockFlag) {
+			message.setReject('Message rejected');
+			return;
+		}
+
+		let account = await accountService.selectByEmailIncludeDel({ env: env }, message.to);
+
+		if (!account) {
+			const baseEmail = emailUtils.getBaseEmail(message.to);
+			if (baseEmail && baseEmail !== message.to) {
+				account = await accountService.selectByEmailIncludeDel({ env: env }, baseEmail);
+			}
+		}
 
 		if (!account && noRecipient === settingConst.noRecipient.CLOSE) {
 			message.setReject('Recipient not found');
@@ -56,50 +79,21 @@ export async function email(message, env, ctx) {
 		let userRow = {}
 
 		if (account) {
-			 userRow = await userService.selectById({ env: env }, account.userId);
+			 userRow = await userService.selectByIdIncludeDel({ env: env }, account.userId);
 		}
 
 		if (account && userRow.email !== env.admin) {
 
-			let { banEmail, banEmailType, availDomain } = await roleService.selectByUserId({ env: env }, account.userId);
+			let { banEmail, availDomain } = await roleService.selectByUserId({ env: env }, account.userId);
 
 			if (!roleService.hasAvailDomainPerm(availDomain, message.to)) {
-				message.setReject('Mailbox disabled');
+				message.setReject('The recipient is not authorized to use this domain.');
 				return;
 			}
 
-			banEmail = banEmail.split(',').filter(item => item !== '');
-
-
-			if (banEmail.includes('*')) {
-
-				if (!banEmailHandler(banEmailType, message, email)) return;
-
-			}
-
-			for (const item of banEmail) {
-
-				if (verifyUtils.isDomain(item)) {
-
-					const banDomain = item.toLowerCase();
-					const receiveDomain = emailUtils.getDomain(email.from.address.toLowerCase());
-
-					if (banDomain === receiveDomain) {
-
-						if (!banEmailHandler(banEmailType, message, email)) return;
-
-					}
-
-				} else {
-
-					if (item.toLowerCase() === email.from.address.toLowerCase()) {
-
-						if (!banEmailHandler(banEmailType, message, email)) return;
-
-					}
-
-				}
-
+			if(roleService.isBanEmail(banEmail, email.from.address)) {
+				message.setReject('The recipient is disabled from receiving emails.');
+				return;
 			}
 
 		}
@@ -110,6 +104,7 @@ export async function email(message, env, ctx) {
 		}
 
 		const toName = email.to.find(item => item.address === message.to)?.name || '';
+		const code = await aiService.extractCode({ env }, email, { aiCode, aiCodeFilter });
 
 		const params = {
 			toEmail: message.to,
@@ -117,6 +112,7 @@ export async function email(message, env, ctx) {
 			sendEmail: email.from.address,
 			name: email.from.name || emailUtils.getName(email.from.address),
 			subject: email.subject,
+			code,
 			content: email.html,
 			text: email.text,
 			cc: email.cc ? JSON.stringify(email.cc) : '[]',
@@ -195,25 +191,41 @@ export async function email(message, env, ctx) {
 
 		}
 
+		//转发到 Webhook
+		if (webhookStatus === settingConst.webhookStatus.OPEN && webhookUrl) {
+			await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
+		}
+
 	} catch (e) {
 		console.error('邮件接收异常: ', e);
 		throw e
 	}
 }
 
-function banEmailHandler(banEmailType, message, email) {
+function checkBlock(blackSubjectStr, blackContentStr, blackFromStr, email) {
 
-	if (banEmailType === roleConst.banEmailType.ALL) {
-		message.setReject('Mailbox disabled');
-		return false;
+	const blackFromList = blackFromStr ? blackFromStr.split(',') : []
+	const blackContentList = blackContentStr ? blackContentStr.split(',') : []
+	const blackSubjectList = blackSubjectStr ? blackSubjectStr.split(',') : []
+
+	for (const blackSubject of blackSubjectList) {
+		if (email.subject?.includes(blackSubject)) {
+			return true
+		}
 	}
 
-	if (banEmailType === roleConst.banEmailType.CONTENT) {
-		email.html = 'The content has been deleted';
-		email.text = 'The content has been deleted';
-		email.attachments = [];
+	for (const blackContent of blackContentList) {
+		if (email.html?.includes(blackContent) || email.text?.includes(blackContent)) {
+			return true
+		}
 	}
 
-	return true;
+	for (const blackFrom of blackFromList) {
+		if (email.from.address === blackFrom || emailUtils.getDomain(email.from.address) === blackFrom) {
+			return true
+		}
+	}
+
+	return false
 
 }

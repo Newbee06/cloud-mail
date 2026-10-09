@@ -37,15 +37,18 @@
                         v-if="!loading && emailList.length > 0"
                         :key="keyCount"
         >
-          <template #default="{ data: item, index }">
-            <div :class="'email-row ' + props.type"
+          <template #default="{ data: item, index }" >
+            <div :class="['email-row', props.type, { 'right-checked': item.rightChecked }]"
                  :data-checked="item.checked"
                  @click="jumpDetails(item)"
                  v-if="!item.expand"
                  :key="item.emailId"
+                 @contextmenu="handleContextmenu($event, item)"
             >
               <el-checkbox :class=" props.type === 'all-email' ? 'all-email-checkbox' : 'checkbox'"
-                           v-model="item.checked" @click.stop></el-checkbox>
+                           v-model="item.checked"
+                           :disabled="!item.checked && isSelectMax"
+                           @click.stop></el-checkbox>
               <div @click.stop="starChange(item)" class="pc-star" v-if="showStar">
                 <Icon v-if="item.isStar" icon="fluent-color:star-16" width="20" height="20"/>
                 <Icon v-else icon="solar:star-line-duotone" width="18" height="18"/>
@@ -80,11 +83,14 @@
                   <div class="email-text">
                     <span class="email-subject" :style="(item.unread === EmailUnreadEnum.UNREAD && showUnread)  ? 'font-weight: bold' : ''">
                       <div class="unread" v-if="!isMobile && (item.unread === EmailUnreadEnum.UNREAD && showUnread) "/>
-                      <slot name="subject" :email="item" >
-                        {{ item.subject || '\u200B' }}
-                      </slot>
+                      <span v-if="item.code" class="code-tag" @click.stop="copyCode(item.code)">[{{ t('codeLabel') }}{{ item.code }}]</span>
+                      <span class="subject-text">
+                        <slot name="subject" :email="item" >
+                          {{ item.subject || '\u200B' }}
+                        </slot>
+                      </span>
                     </span>
-                    <span class="email-content">{{ item.formatText || '\u200B' }}</span>
+                    <span class="email-content">{{ item.listText || item.text || '\u200B' }}</span>
                   </div>
                   <div class="user-info" v-if="showUserInfo">
                     <div class="user">
@@ -133,16 +139,105 @@
                        :showUserInfo="showUserInfo"
                        :type="type"/>
       <div class="empty" v-if="noLoading && emailList.length === 0 && !loading">
-        <el-empty :image-size="isMobile ? 120 : 0" :description="$t('noMessagesFound')"/>
+        <el-empty :image-size="isMobile ? 120 : null" :description="$t('noMessagesFound')"/>
       </div>
     </div>
+    <el-dropdown
+        ref="dropdownRef"
+        @visible-change="visibleChange"
+        :virtual-ref="triggerRef"
+        :show-arrow="false"
+        :popper-options="{
+      modifiers: [{ name: 'offset', options: { offset: [0, 0] } }],
+    }"
+        virtual-triggering
+        trigger="contextmenu"
+        placement="bottom-start"
+    >
+      <template #dropdown>
+        <el-dropdown-menu>
+          <el-dropdown-item v-if="rightClickEmail.code" @click="copyCode(rightClickEmail.code)" >
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="fluent-color:clipboard-24" width="20" height="20" />
+                <span>{{t('copyCode')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="['email'].includes(props.type)" @click="emailRead(rightClickEmail.emailId)" >
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="fluent:mail-read-20-regular" width="20" height="20" />
+                <span>{{t('markAsRead')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="['email','star'].includes(props.type)" @click="openReply(rightClickEmail)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="la:reply" width="20" height="20"  />
+                <span>{{t('reply')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="['email','send', 'star'].includes(props.type)" @click="openForward(rightClickEmail)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="iconoir:arrow-up-right" width="19" height="19"  />
+                <span>{{t('forward')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="['email','send', 'star'].includes(props.type)" @click="starChange(rightClickEmail)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="solar:star-line-duotone" width="19" height="19"/>
+                <span>{{t('star')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="props.type === 'all-email'" @click="handleSearch('user', rightClickEmail.userEmail)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="iconoir:search" width="20" height="20" />
+                <span>{{t('searchUser')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="props.type === 'all-email' " @click="handleSearch('account', rightClickEmail.toEmail)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="iconoir:search" width="20" height="20" />
+                <span>{{t('searchEmail')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item v-if="props.type === 'all-email' " @click="handleSearch('name', rightClickEmail.name)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="iconoir:search" width="20" height="20" />
+                <span>{{t('searchSender')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+          <el-dropdown-item @click="rightDelete(rightClickEmail.emailId)">
+            <template #default>
+              <div class="right-dropdown-item">
+                <Icon icon="uiw:delete" width="16" height="20" style="margin-left: 1px;margin-right: 3px" />
+                <span>{{t('delete')}}</span>
+              </div>
+            </template>
+          </el-dropdown-item>
+        </el-dropdown-menu>
+      </template>
+    </el-dropdown>
   </div>
 </template>
 
 <script setup>
 import {Icon} from "@iconify/vue";
 import skeletonBlock from "@/components/email-scroll/skeleton/index.vue"
-import {computed, onActivated, reactive, ref, watch, nextTick} from "vue";
+import {computed, onActivated, reactive, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import {useEmailStore} from "@/store/email.js";
 import {useUiStore} from "@/store/ui.js";
 import {useSettingStore} from "@/store/setting.js";
@@ -191,7 +286,7 @@ const props = defineProps({
   },
   type: {
     type: String,
-    default: ''
+    default: 'email'
   },
   showFirstLoading: {
     type: Boolean,
@@ -203,7 +298,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['jump', 'refresh-before', 'delete-draft'])
+const emit = defineEmits(['jump', 'refresh-before', 'delete-draft', 'right-search'])
 const {t} = useI18n()
 const settingStore = useSettingStore()
 const uiStore = useUiStore();
@@ -225,16 +320,37 @@ let reqLock = false
 let isMobile = ref(innerWidth < 1367)
 let skeletonRows = 0
 const timePaddingRight = ref('');
-const keyCount = ref(0)
+const keyCount = ref(0);
+const dropdownRef = ref(null);
+const dropdownCloseLock = ref(false);
+const dropdownShow = ref(false);
+const rightClickEmail = ref({});
+const MAX_SELECT_COUNT = 95;
+const checkedEmailCount = ref(0);
+const isSelectMax = computed(() => checkedEmailCount.value >= MAX_SELECT_COUNT);
+let timer = null
+const position = ref(
+    DOMRect.fromRect({
+      x: 0,
+      y: 0,
+    })
+)
+
+const triggerRef = ref({
+  getBoundingClientRect() {
+    return position.value;
+  }
+})
+
 const queryParam = reactive({
-  emailId: 0,
-  size: 50,
+  size: 50
 });
 
 defineExpose({
   refreshList,
   deleteEmail,
   addItem,
+  handleList,
   emailList,
   firstLoad,
   latestEmail,
@@ -249,6 +365,18 @@ onActivated(() => {
   })
 })
 
+onMounted(() => {
+  timer = setInterval(() => {
+    emailList.forEach(email => {
+      email.formatCreateTime = fromNow(email.createTime);
+    })
+  }, 1000 * 60);
+})
+
+onUnmounted(() => {
+  clearInterval(timer)
+})
+
 getEmailList()
 
 window.onresize = () => {
@@ -260,7 +388,7 @@ function onScroll(e) {
 }
 
 const { arrivedState } = useScroll(scrollbarRef, {
-  offset: { bottom: 1200 }
+  offset: { bottom: isMobile.value ? 2200 : 1500 }
 })
 
 
@@ -324,6 +452,7 @@ watch(() => arrivedState.bottom, (isBottom) => {
 watch(
     () => emailList.map(item => item.checked),
     () => {
+      checkedEmailCount.value = emailList.length
       if (emailList.length > 0) {
         updateCheckStatus();
       }
@@ -354,6 +483,58 @@ watch(() => emailStore.addStarEmailId, () => {
   })
 })
 
+window.addEventListener('wheel', (event) => {
+  if (dropdownShow.value) {
+    dropdownRef.value.handleClose();
+  }
+})
+
+function openReply(email) {
+  const fullEmail = emailStore.detailMap[email.emailId]
+  if (!fullEmail) return
+  uiStore.writerRef.openReply(fullEmail)
+}
+
+function openForward(email) {
+  const fullEmail = emailStore.detailMap[email.emailId]
+  if (!fullEmail) return
+  uiStore.writerRef.openForward(fullEmail)
+}
+
+function visibleChange(e) {
+  dropdownShow.value = e;
+  dropdownCloseLock.value = true;
+  setTimeout(() => {
+    dropdownCloseLock.value = false;
+  },1500)
+
+  if (!e && rightClickEmail.value.rightChecked) {
+    rightClickEmail.value.rightChecked = false
+  }
+}
+
+const handleContextmenu = (event, email) => {
+
+  if (props.type === 'draft') {
+    return
+  }
+
+  if (rightClickEmail.value.rightChecked) {
+    rightClickEmail.value.rightChecked = false
+  }
+
+  const { clientX, clientY } = event
+  position.value = DOMRect.fromRect({
+    x: clientX,
+    y: clientY,
+  })
+  event.preventDefault();
+  dropdownRef.value?.handleOpen();
+
+  rightClickEmail.value = email;
+  rightClickEmail.value.rightChecked = true
+}
+
 function updateHasScrollbar() {
   nextTick(() => {
     const doc = document.querySelector('.virtual');
@@ -376,38 +557,6 @@ function getSkeletonRows() {
 const accountShow = computed(() => {
   return uiStore.accountShow && settingStore.settings.manyEmail === 0
 })
-
-function htmlToText(email) {
-  if (email.content) {
-
-    const tempDiv = document.createElement('div');
-
-    tempDiv.innerHTML = email.content.replace(
-        /<(img|iframe|object|embed|video|audio|source|link)[^>]*>/gi, ''
-    );
-
-    const scriptsAndStyles = tempDiv.querySelectorAll('script, style, title');
-    scriptsAndStyles.forEach(el => el.remove());
-    let text = tempDiv.textContent || tempDiv.innerText || '';
-    text = text.replace(/\s+/g, ' ').trim();
-    return cleanSpace(text)
-  }
-
-  if (email.text) {
-    return cleanSpace(email.text)
-  } else {
-    return ''
-  }
-
-}
-
-function cleanSpace(text) {
-  return text
-      .replace(/[\u200B-\u200F\uFEFF\u034F\u200B-\u200F\u00A0\u3000\u00AD]/g, '')// 移除零宽空格
-      .replace(/\s+/g, ' ')                   // 多空白合并成一个空格
-      .trim();
-}
-
 
 function starChange(email) {
 
@@ -443,6 +592,15 @@ function changeAccountShow() {
 const handleRead = () => {
   const emailIds = getSelectedMailsIds();
   props.emailRead(emailIds);
+  localRead(emailIds);
+}
+
+function emailRead(emailId) {
+  props.emailRead([emailId])
+  localRead([emailId]);
+}
+
+function localRead(emailIds) {
   emailIds.forEach(emailId => {
     const index = emailList.findIndex(email => email.emailId === emailId);
     if (index > -1) {
@@ -452,7 +610,58 @@ const handleRead = () => {
   })
 }
 
-const handleDelete = () => {
+function rightDelete(emailId) {
+
+  if (props.type === 'all-email') {
+    ElMessageBox.confirm(t('delOneEmailConfirm'), {
+      confirmButtonText: t('confirm'),
+      cancelButtonText: t('cancel'),
+      type: 'warning'
+    }).then(() => {
+      props.emailDelete([emailId]).then(() => {
+        ElMessage({
+          message: t('delSuccessMsg'),
+          type: 'success',
+          plain: true
+        })
+        emailStore.deleteIds = [emailId];
+      })
+    })
+    return;
+  }
+  props.emailDelete([emailId]).then(() => {
+    ElMessage({
+      message: t('delSuccessMsg'),
+      type: 'success',
+      plain: true
+    })
+    emailStore.deleteIds = [emailId];
+  })
+}
+
+function handleSearch(type, value) {
+  emit('right-search', type, value);
+}
+
+async function copyCode(code) {
+  try {
+    await navigator.clipboard.writeText(code);
+    ElMessage({
+      message: t('copySuccessMsg'),
+      type: 'success',
+      plain: true
+    })
+  } catch (err) {
+    console.error(`${t('copyFailMsg')}:`, err);
+    ElMessage({
+      message: t('copyFailMsg'),
+      type: 'error',
+      plain: true
+    })
+  }
+}
+
+function handleDelete() {
   ElMessageBox.confirm(t('delEmailsConfirm'), {
     confirmButtonText: t('confirm'),
     cancelButtonText: t('cancel'),
@@ -495,10 +704,9 @@ function addItem(email) {
   const existIndex = emailList.findIndex(item => item.emailId === email.emailId)
 
   if (existIndex > -1) {
-    return
+    return false;
   }
 
-  email.formatText = htmlToText(email);
   email.formatCreateTime = fromNow(email.formatCreateTime);
 
   if (props.timeSort) {
@@ -507,12 +715,12 @@ function addItem(email) {
       emailList.push(email);
     }
 
-    if (email.emailId > latestEmail.value.emailId) {
+    if (email.emailId > latestEmail.value?.emailId) {
       latestEmail.value = email
     }
 
     total.value++
-    return;
+    return true;
   }
 
 
@@ -528,15 +736,28 @@ function addItem(email) {
     }
   }
 
-  if (email.emailId > latestEmail.value.emailId) {
+  if (email.emailId > latestEmail.value?.emailId) {
     latestEmail.value = email
   }
 
   total.value++
+  return true;
 }
 
 function handleCheckAllChange(val) {
-  emailList.forEach(item => item.checked = val);
+  if (val) {
+    let count = 0;
+    emailList.forEach(item => {
+      if (count < MAX_SELECT_COUNT) {
+        item.checked = true;
+        count++;
+      } else {
+        item.checked = false;
+      }
+    });
+  } else {
+    emailList.forEach(item => item.checked = false);
+  }
   isIndeterminate.value = false;
 }
 
@@ -551,13 +772,25 @@ function getSelectedDraftsIds() {
 
 function updateCheckStatus() {
   const checkedCount = emailList.filter(item => item.checked).length;
-  checkAll.value = checkedCount === emailList.length;
-  isIndeterminate.value = checkedCount > 0 && checkedCount < emailList.length;
+  checkedEmailCount.value = checkedCount;
+  const atMax = checkedCount >= MAX_SELECT_COUNT;
+  checkAll.value = emailList.length > 0 && (checkedCount === emailList.length || atMax);
+  isIndeterminate.value = checkedCount > 0 && !checkAll.value;
 }
 
 function jumpDetails(email) {
-  const sel = window.getSelection();
-  if (sel && !sel.isCollapsed) return;
+
+  if (dropdownShow.value) {
+    dropdownRef.value.handleClose();
+    return;
+  }
+
+  if (!dropdownCloseLock.value) {
+    const sel = window.getSelection();
+    if (sel.toString().trim()) {
+      return
+    }
+  }
   emit('jump', email)
 }
 
@@ -565,6 +798,8 @@ function jumpDetails(email) {
 function getEmailList(refresh = false) {
 
   if (reqLock) return;
+
+  let emailId = emailList.length > 0 ? emailList.at(-1).emailId : 0;
 
   reqLock = true
 
@@ -577,6 +812,7 @@ function getEmailList(refresh = false) {
 
   } else {
     getSkeletonRows()
+    emailId = 0
     loading.value = true
     scrollTop = 0
   }
@@ -587,10 +823,11 @@ function getEmailList(refresh = false) {
     followLoading.value = !refresh;
   }
   let start = Date.now();
-  props.getEmailList(queryParam.emailId, queryParam.size).then(async data => {
+
+  props.getEmailList(emailId, queryParam.size).then(async data => {
     let end = Date.now();
     let duration = end - start;
-    if (duration < 300 && !queryParam.emailId) {
+    if (duration < 300 && !emailId) {
         await sleep(300 - duration)
     }
     firstLoad.value = false
@@ -615,7 +852,6 @@ function getEmailList(refresh = false) {
     followLoading.value = data.list.length >= queryParam.size;
 
     total.value = data.total;
-    queryParam.emailId = data.list.length > 0 ? data.list.at(-1).emailId : 0
   }).finally(() => {
     loading.value = false
     reqLock = false
@@ -624,7 +860,6 @@ function getEmailList(refresh = false) {
 
 function handleList(list) {
   list.forEach(email => {
-    email.formatText = htmlToText(email)
     email.formatCreateTime = fromNow(email.createTime);
     email.test = t('received')
     const statusIconMap = {
@@ -637,7 +872,10 @@ function handleList(list) {
       5: { icon: 'bi:send-arrow-up-fill',  color: '#FBBD08', content: t('delayed') },
       7: { icon: 'ic:round-mark-email-read', color: '#FBBD08', content: t('noRecipient') },
     };
-    if (email.isDel) email.isdelContent = t('selectDeleted');
+
+    if (email.isDel) {
+      email.isDelContent = t('selectDeleted');
+    }
     email.statusIcon = statusIconMap[email.status];
   })
 }
@@ -653,7 +891,6 @@ function refresh() {
 function refreshList() {
   checkAll.value = false;
   isIndeterminate.value = false;
-  queryParam.emailId = 0;
   getEmailList(true);
 }
 
@@ -743,6 +980,11 @@ function loadData() {
   height: 48px;
   @media (max-width: 1366px) {
     height: 83px;
+  }
+
+  @media (pointer: coarse) {
+    /* 触屏 */
+    user-select: none;
   }
   &.all-email {
     height: 65px;
@@ -913,12 +1155,35 @@ function loadData() {
       }
 
       .email-subject {
+        display: flex;
+        align-items: center;
+        gap: 6px;
         overflow: hidden;
         white-space: nowrap;
-        text-overflow: ellipsis;
+        min-width: 0;
         @media (min-width: 1367px) {
           padding-left: 5px;
         }
+      }
+
+      .code-tag {
+        flex: 0 0 auto;
+        max-width: 170px;
+        height: 20px;
+        line-height: 20px;
+        font-size: 14px;
+        color: var(--el-text-color-primary);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+
+      .subject-text {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        min-width: 0;
       }
 
       .email-content {
@@ -957,6 +1222,11 @@ function loadData() {
   &:hover {
     background-color: var(--email-hover-background);
     z-index: 0;
+  }
+
+  &.right-checked,
+  &.right-checked:hover {
+    background-color: var(--email-right-click-background);
   }
 
   /*&[data-checked="true"] {
@@ -1047,6 +1317,26 @@ function loadData() {
   justify-content: center;
   position: relative;
   bottom: 1px;
+}
+
+
+
+.right-dropdown-item {
+  display: flex;
+  gap: 10px;
+}
+
+:deep(.el-dropdown-menu__item:last-child) {
+  padding-bottom: 10px;
+}
+
+:deep(.el-dropdown-menu__item:first-child) {
+  padding-top: 10px;
+}
+
+:deep(.el-dropdown-menu__item) {
+  padding-right: 14px;
+  padding-left: 14px;
 }
 
 .unread {

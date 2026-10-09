@@ -14,6 +14,7 @@
                  :item-height="65"
                  @jump="jumpContent"
                  @refresh-before="refreshBefore"
+                 @right-search="rightSearch"
                  :type="'all-email'"
 
     >
@@ -61,10 +62,10 @@
     <el-dialog v-model="showBathDelete" :title="$t('clearEmail')" width="335"
                @closed="closedClear">
       <div class="clear-email">
-        <el-input v-model="clearParams.sendName" :placeholder="$t('sender')"/>
-        <el-input v-model="clearParams.subject" :placeholder="$t('subject')"/>
-        <el-input v-model="clearParams.sendEmail" :placeholder="$t('sendEmailAddress')"/>
-        <el-input v-model="clearParams.toEmail" :placeholder="$t('toEmail')"/>
+        <el-input v-model="clearParams.sendName" :placeholder="$t('sender')" @keyup.enter="batchDelete"/>
+        <el-input v-model="clearParams.subject" :placeholder="$t('subject')" @keyup.enter="batchDelete"/>
+        <el-input v-model="clearParams.sendEmail" :placeholder="$t('sendEmailAddress')" @keyup.enter="batchDelete"/>
+        <el-input v-model="clearParams.toEmail" :placeholder="$t('toEmail')" @keyup.enter="batchDelete"/>
         <el-date-picker popper-class="my-date-picker"
                         v-model="clearTime"
                         type="daterange"
@@ -101,7 +102,6 @@ import {Icon} from "@iconify/vue";
 import router from "@/router/index.js";
 import {useI18n} from 'vue-i18n';
 import {toUtc} from "@/utils/day.js";
-import {AutoRefreshEnum} from "@/enums/setting-enum.js";
 import {sleep} from "@/utils/time-utils.js";
 import {useSettingStore} from "@/store/setting.js";
 import { useRoute } from 'vue-router'
@@ -193,6 +193,8 @@ function openBathDelete() {
 
 function batchDelete() {
 
+  if (clearLoading.value) return
+
   if (clearTime.value) {
     clearParams.startTime = toUtc(clearTime.value[0]).format("YYYY-MM-DD HH:mm:ss")
     clearParams.endTime = toUtc(clearTime.value[1]).add(1, 'day').format("YYYY-MM-DD HH:mm:ss")
@@ -204,7 +206,7 @@ function batchDelete() {
   }
 
   ElMessageBox.confirm(
-      t('delAllEmailConfirm'),
+      t('delAllConfirm'),
       {
         confirmButtonText: t('confirm'),
         cancelButtonText: t('cancel'),
@@ -225,6 +227,12 @@ function batchDelete() {
       clearLoading.value = false
     })
   })
+}
+
+function rightSearch(type, value) {
+  params.searchType = type;
+  searchValue.value = value;
+  search();
 }
 
 function refreshBefore() {
@@ -274,7 +282,7 @@ function typeSelectChange() {
 }
 
 function jumpContent(email) {
-  emailStore.contentData.email = email
+  emailStore.contentData.email = emailStore.toContentEmail(email)
   emailStore.contentData.delType = 'physics'
   emailStore.contentData.showStar = false
   emailStore.contentData.showReply = false
@@ -283,18 +291,20 @@ function jumpContent(email) {
 
 
 function getEmailList(emailId, size) {
-  return allEmailList({emailId, size, ...params})
+  return emailStore.fetchList(full => allEmailList({emailId, size, full, ...params}))
 }
 
 async function latest() {
 
   while (true) {
 
-    await sleep(1000)
+    let autoRefresh = settingStore.settings.autoRefresh;
+
+    await sleep(autoRefresh > 1 ? autoRefresh * 1000 : 3000);
 
     const latestId = sysEmailScroll.value.latestEmail?.emailId
 
-    if (settingStore.settings.autoRefresh === AutoRefreshEnum.DISABLED) {
+    if (autoRefresh < 2) {
       continue
     }
 
@@ -329,6 +339,8 @@ async function latest() {
         continue
       }
 
+      emailStore.applyFullList(list)
+
       for (let email of list) {
 
         sysEmailScroll.value.addItem(email)
@@ -337,8 +349,8 @@ async function latest() {
       }
 
     } catch (e) {
-      if (e.code === 401) {
-        settingStore.settings.autoRefresh = AutoRefreshEnum.DISABLED;
+      if (e.code === 401 || e.code === 403) {
+        settingStore.settings.autoRefresh = 0;
       }
       console.error(e)
     }

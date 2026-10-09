@@ -34,7 +34,6 @@ import {sleep} from "@/utils/time-utils.js";
 import router from "@/router/index.js";
 import {Icon} from "@iconify/vue";
 import { useRoute } from 'vue-router'
-import {AutoRefreshEnum} from "@/enums/setting-enum.js";
 
 defineOptions({
   name: 'email'
@@ -65,12 +64,12 @@ function changeTimeSort() {
 }
 
 function jumpContent(email) {
-  emailStore.contentData.email = email
+  emailStore.contentData.email = emailStore.toContentEmail(email)
   emailStore.contentData.delType = 'logic'
   emailStore.contentData.showUnread = true
   emailStore.contentData.showStar = true
   emailStore.contentData.showReply = true
-  router.push('/message')
+  router.push('/mail')
 }
 
 const existIds = new Set();
@@ -78,7 +77,8 @@ const existIds = new Set();
 async function latest() {
   while (true) {
 
-    await sleep(1000)
+    let autoRefresh = settingStore.settings.autoRefresh;
+    await sleep(autoRefresh > 1 ? autoRefresh * 1000 : 3000);
 
     if (route.name !== 'email') {
       continue;
@@ -86,7 +86,7 @@ async function latest() {
 
     const latestId = scroll.value.latestEmail?.emailId
 
-    if (!scroll.value.firstLoad && settingStore.settings.autoRefresh === AutoRefreshEnum.ENABLED) {
+    if (!scroll.value.firstLoad && autoRefresh > 1) {
       try {
         const accountId = accountStore.currentAccountId
         const allReceive = scroll.value.latestEmail?.allReceive
@@ -101,6 +101,7 @@ async function latest() {
         //确保请求回来后，账号没有切换，时间排序没有改变，全部邮件类型没变
         if (accountId === accountStore.currentAccountId && params.timeSort === curTimeSort && allReceive === accountStore.currentAccount.allReceive) {
           if (list.length > 0) {
+            emailStore.applyFullList(list)
 
             for (let email of list) {
 
@@ -112,18 +113,6 @@ async function latest() {
                 existIds.add(email.emailId)
                 scroll.value.addItem(email)
 
-                if (innerWidth > 1367) {
-                  ElNotification({
-                    type: 'primary',
-                    message: `<div style="cursor: pointer;"><div style="overflow: hidden;white-space: nowrap;text-overflow: ellipsis; font-weight: bold;font-size: 16px;margin-bottom: 5px;">${email.name}</div><div style="color: teal;">${email.subject}</div></div>`,
-                    position: 'bottom-right',
-                    dangerouslyUseHTMLString: true,
-                    onClick: () => {
-                      jumpContent(email);
-                    }
-                  })
-                }
-
                 await sleep(50)
               }
 
@@ -133,8 +122,8 @@ async function latest() {
 
         }
       } catch (e) {
-        if (e.code === 401) {
-          settingStore.settings.autoRefresh = AutoRefreshEnum.DISABLED;
+        if (e.code === 401 || e.code === 403) {
+          settingStore.settings.autoRefresh = 0;
         }
         console.error(e)
       }
@@ -153,7 +142,9 @@ function cancelStar(email) {
 function getEmailList(emailId, size) {
   const accountId =  accountStore.currentAccountId;
   const allReceive = accountStore.currentAccount.allReceive;
-  return emailList(accountId, allReceive, emailId, params.timeSort, size, 0).then(data => {
+  return emailStore.fetchList(full =>
+    emailList(accountId, allReceive, emailId, params.timeSort, size, 0, full)
+  ).then(data => {
     data.latestEmail.reqAccountId = accountId;
     data.latestEmail.allReceive = allReceive;
     return data;
